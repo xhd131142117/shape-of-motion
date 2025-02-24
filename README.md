@@ -34,7 +34,7 @@ python run_training.py \
   --work-dir <OUTPUT_DIR> \
   --use_2dgs
   data:custom \
-  --data.root-dir </path/to/data>
+  --data.data-dir </path/to/data>
 ```
 
 ## Installation
