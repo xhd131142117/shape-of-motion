@@ -25,12 +25,22 @@ class MotionLRConfig:
     rots: float = 1.6e-4
     transls: float = 1.6e-4
 
+@dataclass
+class CameraScalesLRConfig:
+    camera_scales: float = 1e-4
+
+@dataclass
+class CameraPoseLRConfig:
+    Rs: float = 1e-3
+    ts: float = 1e-3
 
 @dataclass
 class SceneLRConfig:
     fg: FGLRConfig
     bg: BGLRConfig
     motion_bases: MotionLRConfig
+    camera_poses: CameraPoseLRConfig
+    camera_scales: CameraScalesLRConfig
 
 
 @dataclass
@@ -45,6 +55,11 @@ class LossesConfig:
     w_smooth_tracks: float = 2.0
     w_scale_var: float = 0.01
     w_z_accel: float = 1.0
+
+    # w_smooth_bases: float = 0.0
+    # w_smooth_tracks: float = 0.0
+    # w_scale_var: float = 0.0
+    # w_z_accel: float = 0.0
 
 
 @dataclass

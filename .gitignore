@@ -8,6 +8,7 @@ work_dirs/
 .envrc
 .bak/
 datasets/
+results/
 
 preproc/checkpoints
 preproc/checkpoints/

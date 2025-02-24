@@ -9,6 +9,7 @@ import numpy as np
 import roma
 import torch
 import torch.nn.functional as F
+from torch import Tensor
 from cuml import HDBSCAN, KMeans
 from loguru import logger as guru
 from matplotlib.pyplot import get_cmap
@@ -23,11 +24,18 @@ from flow3d.loss_utils import (
     knn,
     masked_l1_loss,
 )
-from flow3d.params import GaussianParams, MotionBases
+from flow3d.params import GaussianParams, MotionBases, CameraPoses
 from flow3d.tensor_dataclass import StaticObservations, TrackObservations
 from flow3d.transforms import cont_6d_to_rmat, rt_to_mat4, solve_procrustes
 from flow3d.vis.utils import draw_keypoints_video, get_server, project_2d_tracks
 
+
+def init_trainable_poses(w2cs: Tensor) -> CameraPoses:
+    N, _, _ = w2cs.shape
+    Rs = w2cs[:, :3, :3]
+    ts = w2cs[:, :3, 3:]
+
+    return CameraPoses(Rs, ts)
 
 def init_fg_from_tracks_3d(
     cano_t: int, tracks_3d: TrackObservations, motion_coefs: torch.Tensor

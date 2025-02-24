@@ -3,9 +3,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from gsplat.rendering import rasterization
+from gsplat.rendering import rasterization_2dgs
 from torch import Tensor
 
-from flow3d.params import GaussianParams, MotionBases
+from flow3d.params import GaussianParams, MotionBases, CameraScales, CameraPoses
 
 
 class SceneModel(nn.Module):
@@ -15,7 +16,9 @@ class SceneModel(nn.Module):
         w2cs: Tensor,
         fg_params: GaussianParams,
         motion_bases: MotionBases,
+        camera_poses: CameraPoses | None = None,
         bg_params: GaussianParams | None = None,
+        use_2dgs: bool = False,
     ):
         super().__init__()
         self.num_frames = motion_bases.num_frames
@@ -26,10 +29,13 @@ class SceneModel(nn.Module):
         self.register_buffer("bg_scene_scale", torch.as_tensor(scene_scale))
         self.register_buffer("Ks", Ks)
         self.register_buffer("w2cs", w2cs)
+        self.camera_poses = camera_poses
 
         self._current_xys = None
         self._current_radii = None
         self._current_img_wh = None
+
+        self.use_2dgs = use_2dgs
 
     @property
     def num_gaussians(self) -> int:
@@ -153,7 +159,20 @@ class SceneModel(nn.Module):
         )
         Ks = state_dict[f"{prefix}Ks"]
         w2cs = state_dict[f"{prefix}w2cs"]
-        return SceneModel(Ks, w2cs, fg, motion_bases, bg)
+        camera_poses = None
+        if any("camera_poses." in k for k in state_dict):
+            camera_poses = CameraPoses.init_from_state_dict(
+                state_dict, prefix=f"{prefix}camera_poses.params."
+            )
+
+        return SceneModel(
+            Ks, 
+            w2cs, 
+            fg, 
+            motion_bases, 
+            camera_poses,
+            bg
+        )
 
     def render(
         self,
@@ -176,6 +195,11 @@ class SceneModel(nn.Module):
         fg_only: bool = False,
         filter_mask: torch.Tensor | None = None,
     ) -> dict:
+
+        curr_w2cs = w2cs
+
+        if target_w2cs is not None:
+            target_w2cs_clone = target_w2cs
         device = w2cs.device
         C = w2cs.shape[0]
 
@@ -225,10 +249,10 @@ class SceneModel(nn.Module):
             B = target_ts.shape[0]
             if target_means is None:
                 target_means, _ = pose_fnc(target_ts)  # [G, B, 3]
-            if target_w2cs is not None:
+            if target_w2cs_clone is not None:
                 target_means = torch.einsum(
                     "bij,pbj->pbi",
-                    target_w2cs[:, :3],
+                    target_w2cs_clone[:, :3],
                     F.pad(target_means, (0, 1), value=1.0),
                 )
             track_3d_vals = target_means.flatten(-2)  # (G, B * 3)
@@ -255,20 +279,56 @@ class SceneModel(nn.Module):
             opacities = opacities[filter_mask]
             colors_override = colors_override[filter_mask]
 
-        render_colors, alphas, info = rasterization(
-            means=means,
-            quats=quats,
-            scales=scales,
-            opacities=opacities,
-            colors=colors_override,
-            backgrounds=bg_color,
-            viewmats=w2cs,  # [C, 4, 4]
-            Ks=Ks,  # [C, 3, 3]
-            width=W,
-            height=H,
-            packed=False,
-            render_mode=mode,
-        )
+        if self.camera_poses is not None:
+            w2cs = self.camera_poses.get_camera_matrix()
+            w2cs = w2cs[t].unsqueeze(0)
+
+        if self.use_2dgs:
+            colors_override = torch.nan_to_num(colors_override, nan=1e-6)
+            backgrounds = torch.nan_to_num(bg_color, nan=1.0)
+
+            outputs = rasterization_2dgs(
+                means=means,
+                quats=quats,
+                scales=scales,
+                opacities=opacities,
+                colors=colors_override,
+                backgrounds=bg_color,
+                viewmats=curr_w2cs,  # [C, 4, 4]
+                Ks=Ks,  # [C, 3, 3]
+                width=W,
+                height=H,
+                packed=False,
+                render_mode=mode,
+            )
+
+            (
+                render_colors,
+                alphas,
+                render_normals,
+                surf_normals,
+                _,
+                _,
+                info,
+            ) = outputs
+        
+        else:
+            render_colors, alphas, info = rasterization(
+                means=means,
+                quats=quats,
+                scales=scales,
+                opacities=opacities,
+                colors=colors_override,
+                backgrounds=bg_color,
+                viewmats=curr_w2cs,  # [C, 4, 4]
+                Ks=Ks,  # [C, 3, 3]
+                width=W,
+                height=H,
+                packed=False,
+                render_mode=mode,
+            )
+            render_normals = None
+            surf_normals = None
 
         # Populate the current data for adaptive gaussian control.
         if self.training and info["means2d"].requires_grad:
@@ -289,4 +349,6 @@ class SceneModel(nn.Module):
                 x = x.reshape(C, H, W, B, 3)
             out_dict[name] = x
         out_dict["acc"] = alphas
+        out_dict["rend_normal"] = render_normals
+        out_dict["surf_normal"] = surf_normals
         return out_dict

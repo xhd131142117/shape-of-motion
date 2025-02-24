@@ -25,6 +25,29 @@ def get_colmap_camera_params(colmap_dir, img_files):
 
     return K_all, extrinsics_all
 
+def get_colmap_camera_params_txt(colmap_dir, img_files):
+    cameras_pth = os.path.join(colmap_dir + "/cameras.txt")
+    images_pth = os.path.join(colmap_dir + "/images.txt")
+
+    cameras = read_cameras_text(cameras_pth)
+    images = read_images_text(images_pth)
+
+
+    colmap_image_idcs = {v.name: k for k, v in images.items()}
+    img_names = [os.path.basename(img_file) for img_file in img_files]
+    num_imgs = len(img_names)
+    K_all = np.zeros((num_imgs, 4, 4))
+    extrinsics_all = np.zeros((num_imgs, 4, 4))
+    for idx, name in enumerate(img_names):
+        key = colmap_image_idcs[name]
+        image = images[key]
+        assert image.name == name
+        K, extrinsics = get_intrinsics_extrinsics(image, cameras)
+        K_all[idx] = K
+        extrinsics_all[idx] = extrinsics
+
+    return K_all, extrinsics_all
+
 
 @dataclass(frozen=True)
 class CameraModel:

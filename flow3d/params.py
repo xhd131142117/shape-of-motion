@@ -3,9 +3,102 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch import Tensor
 
 from flow3d.transforms import cont_6d_to_rmat
 
+###### Deprecated ######
+class CameraScales(nn.Module):
+    """Align the monst3r camera pose scale with the scene"""
+
+    def __init__(
+        self,
+        camera_scales: torch.Tensor,
+    ):
+        super().__init__()
+        self.params = nn.ParameterDict(
+            {"camera_scales": camera_scales}
+        )    
+
+    @staticmethod
+    def init_from_state_dict(state_dict, prefix="params."):
+        param_keys = ["camera_scales"]
+        assert all(f"{prefix}{k}" in state_dict for k in param_keys)
+        args = {k: state_dict[f"{prefix}{k}"] for k in param_keys}
+        return CameraScales(**args)
+    
+    def get_camera_scales(self) -> torch.Tensor:
+        return self.params["camera_scales"]
+
+
+class CameraPoses(nn.Module):
+    def __init__(
+        self,
+        Rs: Tensor,
+        ts: Tensor,
+    ):
+        super().__init__()
+        self.params = nn.ParameterDict(
+            {
+                "Rs": nn.Parameter(Rs),
+                "ts": nn.Parameter(ts),
+            }
+        )
+
+    
+    @staticmethod
+    def init_from_state_dict(
+        state_dict: dict[str, Tensor],
+        prefix: str,
+    ):
+        param_keys = ["Rs", "ts"]
+        # import pdb
+        # pdb.set_trace()
+        assert all(f"{prefix}{k}" in state_dict for k in param_keys)
+        args = {k: state_dict[f"{prefix}{k}"] for k in param_keys}
+        return CameraPoses(**args)
+
+    def get_rot_matrix(self):
+        """convert a six number rotation representation to a SO(3) matrix"""
+        Rs = self.params["Rs"]
+        r1 = Rs[:, :, 0]
+        r2 = Rs[:, :, 1]
+        r1 = r1 / torch.norm(r1, dim=-1)[:, None]
+        r2 = r2 - torch.sum(r1 * r2, dim=-1)[:, None] * r1
+        r2 = r2 / torch.norm(r1, dim=-1)[:, None]
+
+        r2 = r2 / torch.norm(r2, dim=-1)[:, None]
+        r3 = torch.cross(r1, r2)
+
+        return torch.stack([r1, r2, r3], dim=-1)
+
+    def get_camera_matrix(self):
+        """get the 3x4 camera pose"""
+        rot_mats = self.get_rot_matrix()
+        ts = self.params["ts"]
+        pose = torch.cat([rot_mats, ts], dim=-1) # [..., 3, 4]
+        homo_pad = torch.tensor([0., 0., 0., 1.]).repeat(pose.shape[0], 1, 1).to(pose.device)
+        pose = torch.cat([
+            pose,
+            homo_pad], dim=-2) # (..., 4, 4)
+        assert pose.shape[-2:] == (4, 4)
+        return pose
+
+    def invert(self, use_inverse: bool=False):
+        """invert the camera pose"""
+        Rs = self.params["Rs"]
+        ts = self.params["ts"]
+        Rs_inv = Rs.inverse() if use_inverse else R.transpose(-1, -2)
+        ts_inv = (-R_inv @ t)[..., 0]
+        return self(Rs_inv, ts_inv)
+
+    def compose(self, pose):
+        """Compose self pose with another pose"""
+        Rs_, ts_ = pose.params["Rs"], pose.params["ts"]
+        Rs, ts = self.params["Rs"], self.params["ts"]
+        R_new = Rs_ @ Rs
+        t_new = (Rs_ @ ts + ts_)[..., 0]
+        return self(R_new, t_new)
 
 class GaussianParams(nn.Module):
     def __init__(

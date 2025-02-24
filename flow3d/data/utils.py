@@ -99,7 +99,6 @@ def get_tracks_3d_for_query_frame(
         tracks_2d[..., 2],
         tracks_2d[..., 3],
     )
-    # visibles = postprocess_occlusions(occs, dists)
     # (T, N), (T, N), (T, N)
     visibles, invisibles, confidences = parse_tapir_track_info(occs, dists)
     # Unproject 2D tracks to 3D.
@@ -136,10 +135,6 @@ def get_tracks_3d_for_query_frame(
     confidences *= is_in_masks.float()
 
     # valid if in the fg mask at least 40% of the time
-    # in_mask_counts = is_in_masks.sum(0)
-    # t = 0.25
-    # thresh = min(t * T, in_mask_counts.float().quantile(t).item())
-    # valid = in_mask_counts > thresh
     valid = is_in_masks[query_index]
     # valid if visible 5% of the time
     visible_counts = visibles.sum(0)

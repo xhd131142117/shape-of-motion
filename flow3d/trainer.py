@@ -22,7 +22,7 @@ from flow3d.metrics import PCK, mLPIPS, mPSNR, mSSIM
 from flow3d.scene_model import SceneModel
 from flow3d.vis.utils import get_server
 from flow3d.vis.viewer import DynamicViewer
-
+from flow3d.normal_utils import depth_to_normal
 
 class Trainer:
     def __init__(
@@ -113,13 +113,15 @@ class Trainer:
 
     @staticmethod
     def init_from_checkpoint(
-        path: str, device: torch.device, *args, **kwargs
+        path: str, device: torch.device, use_2dgs, *args, **kwargs
     ) -> tuple["Trainer", int]:
         guru.info(f"Loading checkpoint from {path}")
         ckpt = torch.load(path)
         state_dict = ckpt["model"]
         model = SceneModel.init_from_state_dict(state_dict)
         model = model.to(device)
+        print(use_2dgs)
+        model.use_2dgs = use_2dgs
         trainer = Trainer(model, device, *args, **kwargs)
         if "optimizers" in ckpt:
             trainer.load_checkpoint_optimizers(ckpt["optimizers"])
@@ -198,6 +200,7 @@ class Trainer:
 
     def compute_losses(self, batch):
         self.model.training = True
+
         B = batch["imgs"].shape[0]
         W, H = img_wh = batch["imgs"].shape[2:0:-1]
         N = batch["target_ts"][0].shape[0]
@@ -217,6 +220,11 @@ class Trainer:
         masks *= valid_masks
         # (B, H, W).
         depths = batch["depths"]
+        # (B, H, W, 3)
+        try:
+            normals = batch["normals"]
+        except:
+            pass
         # [(P, 2), ...].
         query_tracks_2d = batch["query_tracks_2d"]
         # [(N,), ...].
@@ -319,6 +327,16 @@ class Trainer:
         # (P_all,)
         confidences = torch.cat([x.reshape(-1) for x in target_confidences], dim=0)
 
+        if rendered_all["rend_normal"] != None and rendered_all["surf_normal"] != None:
+            # 2DGS normal consistency
+            rendered_normals = cast(torch.Tensor, rendered_all["rend_normal"])
+            surf_normals = cast(torch.Tensor, rendered_all["surf_normal"])
+            surf_normals = surf_normals.reshape(rendered_normals.shape)
+            cos_sim = torch.sum(rendered_normals * surf_normals, dim=-1)
+            normal_loss = (1 - cos_sim).mean()
+            loss += normal_loss * 0.05
+
+
         # RGB loss.
         rendered_imgs = cast(torch.Tensor, rendered_all["img"])
         if self.model.has_bg:
@@ -394,13 +412,6 @@ class Trainer:
             mask=depth_masks,
             quantile=0.98,
         )
-        # depth_loss = cauchy_loss_with_uncertainty(
-        #     pred_disp.squeeze(-1),
-        #     tgt_disp.squeeze(-1),
-        #     depth_masks.squeeze(-1),
-        #     self.depth_uncertainty_activation(self.depth_uncertainties)[ts],
-        #     bias=1e-3,
-        # )
         loss += depth_loss * self.losses_cfg.w_depth_reg
 
         # mapped depth loss (using cached depth with EMA)
@@ -421,14 +432,6 @@ class Trainer:
             mask=depth_masks > 0.5,
             quantile=0.95,
         )
-        # depth_gradient_loss = compute_gradient_loss(
-        #     pred_disps,
-        #     ref_disps,
-        #     mask=depth_masks.squeeze(-1) > 0.5,
-        #     c=depth_uncertainty.detach(),
-        #     mode="l1",
-        #     bias=1e-3,
-        # )
         loss += depth_gradient_loss * self.losses_cfg.w_depth_grad
 
         # bases should be smooth.
@@ -458,23 +461,29 @@ class Trainer:
             )
             loss += small_accel_loss_tracks * self.losses_cfg.w_smooth_tracks
 
+
         # Constrain the std of scales.
         # TODO: do we want to penalize before or after exp?
         loss += (
             self.losses_cfg.w_scale_var
-            * torch.var(self.model.fg.params["scales"], dim=-1).mean()
+            * torch.var(torch.exp(self.model.fg.params["scales"]), dim=-1).mean()
         )
         if self.model.bg is not None:
             loss += (
                 self.losses_cfg.w_scale_var
-                * torch.var(self.model.bg.params["scales"], dim=-1).mean()
+                * torch.var(torch.exp(self.model.bg.params["scales"]), dim=-1).mean()
             )
-
+        
+        if self.model.fg.params["means"].isnan().sum() > 0:
+            import ipdb
+            ipdb.set_trace()
         # # sparsity loss
         # loss += 0.01 * self.opacity_activation(self.opacities).abs().mean()
 
         # Acceleration along ray direction should be small.
         z_accel_loss = compute_z_acc_loss(means_fg_nbs, w2cs)
+
+
         loss += self.losses_cfg.w_z_accel * z_accel_loss
 
         # Prepare stats for logging.

@@ -8,6 +8,8 @@ from loguru import logger as guru
 
 from flow3d.renderer import Renderer
 
+import yaml
+
 torch.set_float32_matmul_precision("high")
 
 
@@ -23,9 +25,14 @@ def main(cfg: RenderConfig):
     ckpt_path = f"{cfg.work_dir}/checkpoints/last.ckpt"
     assert os.path.exists(ckpt_path)
 
+    train_cfg_path = f"{cfg.work_dir}/cfg.yaml"
+    with open(train_cfg_path, "r") as file:
+        train_cfg = yaml.safe_load(file)
+
     renderer = Renderer.init_from_checkpoint(
         ckpt_path,
         device,
+        use_2dgs=train_cfg["use_2dgs"],
         work_dir=cfg.work_dir,
         port=cfg.port,
     )

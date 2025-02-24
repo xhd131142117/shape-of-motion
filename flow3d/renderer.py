@@ -42,13 +42,15 @@ class Renderer:
 
     @staticmethod
     def init_from_checkpoint(
-        path: str, device: torch.device, *args, **kwargs
+        path: str, device: torch.device, use_2dgs, *args, **kwargs
     ) -> "Renderer":
         guru.info(f"Loading checkpoint from {path}")
         ckpt = torch.load(path)
         state_dict = ckpt["model"]
         model = SceneModel.init_from_state_dict(state_dict)
+        model.use_2dgs = use_2dgs
         model = model.to(device)
+        print(f"num gs: {model.fg.num_gaussians + model.bg.num_gaussians}")
         renderer = Renderer(model, device, *args, **kwargs)
         renderer.global_step = ckpt.get("global_step", 0)
         renderer.epoch = ckpt.get("epoch", 0)

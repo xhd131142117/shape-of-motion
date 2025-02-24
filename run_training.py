@@ -20,6 +20,7 @@ from flow3d.data import (
     CustomDataConfig,
     get_train_val_datasets,
     iPhoneDataConfig,
+    NvidiaDataConfig,
 )
 from flow3d.data.utils import to_device
 from flow3d.init_utils import (
@@ -28,12 +29,14 @@ from flow3d.init_utils import (
     init_motion_params_with_procrustes,
     run_initial_optim,
     vis_init_params,
+    init_trainable_poses,
 )
 from flow3d.scene_model import SceneModel
 from flow3d.tensor_dataclass import StaticObservations, TrackObservations
 from flow3d.trainer import Trainer
 from flow3d.validator import Validator
 from flow3d.vis.utils import get_server
+from flow3d.params import CameraScales
 
 torch.set_float32_matmul_precision("high")
 
@@ -58,6 +61,7 @@ class TrainConfig:
         Annotated[iPhoneDataConfig, tyro.conf.subcommand(name="iphone")]
         | Annotated[DavisDataConfig, tyro.conf.subcommand(name="davis")]
         | Annotated[CustomDataConfig, tyro.conf.subcommand(name="custom")]
+        | Annotated[NvidiaDataConfig, tyro.conf.subcommand(name="nvidia")]
     )
     lr: SceneLRConfig
     loss: LossesConfig
@@ -72,6 +76,7 @@ class TrainConfig:
     num_dl_workers: int = 4
     validate_every: int = 50
     save_videos_every: int = 50
+    use_2dgs: bool = False
 
 
 def main(cfg: TrainConfig):
@@ -102,6 +107,7 @@ def main(cfg: TrainConfig):
     trainer, start_epoch = Trainer.init_from_checkpoint(
         ckpt_path,
         device,
+        cfg.use_2dgs,
         cfg.lr,
         cfg.loss,
         cfg.optim,
@@ -191,7 +197,19 @@ def initialize_and_checkpoint_model(
     if vis and cfg.port is not None:
         server = get_server(port=cfg.port)
         vis_init_params(server, fg_params, motion_bases)
-    model = SceneModel(Ks, w2cs, fg_params, motion_bases, bg_params)
+
+
+    camera_poses = init_trainable_poses(w2cs)
+
+    model = SceneModel(
+        Ks, 
+        w2cs, 
+        fg_params, 
+        motion_bases, 
+        camera_poses,
+        bg_params,
+        cfg.use_2dgs,
+    )
 
     guru.info(f"Saving initialization to {ckpt_path}")
     os.makedirs(os.path.dirname(ckpt_path), exist_ok=True)
@@ -219,6 +237,7 @@ def init_model_from_tracks(
 
     rot_type = "6d"
     cano_t = int(tracks_3d.visibles.sum(dim=0).argmax().item())
+
     guru.info(f"{cano_t=} {num_fg=} {num_bg=} {num_motion_bases=}")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 

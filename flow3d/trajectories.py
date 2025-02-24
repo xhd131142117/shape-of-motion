@@ -66,6 +66,65 @@ def get_lookat_w2cs(positions: torch.Tensor, lookat: torch.Tensor, up: torch.Ten
     w2cs = torch.linalg.inv(rt_to_mat4(Rs, positions))
     return w2cs
 
+def get_complex_w2cs(
+    ref_w2c: torch.Tensor,
+    lookat: torch.Tensor,
+    up,
+    num_frames: int,
+    **_,
+) -> torch.Tensor:
+    
+    def linear_interpolate_camera(
+        cam1: torch.Tensor, 
+        cam2: torch.Tensor, 
+        nframes: int,
+    ) -> torch.Tensor:
+        out_pos = []
+        for i in range(nframes):
+            interp_pos = cam1 * (nframes - i) / nframes + cam2 * (i / nframes)
+            out_pos.append(interp_pos)
+        return out_pos
+    
+    ref_position = torch.linalg.inv(ref_w2c)[:3, 3]
+    
+    # Define zoom in/out radius, use DGM's default radius for now
+    radius = 0.05
+    
+    positions = []
+    
+    # First zoom in
+    zoomed_in_camera = ref_position.clone()
+    zoomed_in_camera[1] += radius
+    positions += linear_interpolate_camera(ref_position, zoomed_in_camera, 10)
+    positions += linear_interpolate_camera(zoomed_in_camera, ref_position, 10)
+    
+    # Then zoom out
+    zoomed_out_camera = ref_position.clone()
+    zoomed_out_camera[1] -= radius
+    positions += linear_interpolate_camera(ref_position, zoomed_out_camera, 10)
+    positions += linear_interpolate_camera(zoomed_out_camera, ref_position, 10)
+    
+    # Then move camera right quickly
+    move_right_camera = ref_position.clone()
+    move_right_camera[0] += radius
+    positions += linear_interpolate_camera(ref_position, move_right_camera, 5)
+    
+    # Next spiral camera
+    spiral_frames = 20
+    for i in range(spiral_frames):
+        angle = 2 * np.pi * (i / spiral_frames)
+        spiral_camera = ref_position.clone()
+        spiral_camera[0] += radius * np.cos(angle)
+        spiral_camera[2] += radius * np.sin(angle)
+        positions.append(spiral_camera)
+    
+    # move camera back to center
+    positions += linear_interpolate_camera(move_right_camera, ref_position, 5)
+    positions = torch.stack(positions)
+    
+    lookat = -ref_w2c[:3, 2]
+    
+    return get_lookat_w2cs(positions, lookat, up)
 
 def get_arc_w2cs(
     ref_w2c: torch.Tensor,
@@ -91,6 +150,8 @@ def get_arc_w2cs(
         roma.rotvec_to_rotmat(thetas[:, None] * up[None]),
         ref_position - lookat,
     )
+    # import pdb
+    # pdb.set_trace()
     return get_lookat_w2cs(positions, lookat, up)
 
 
@@ -156,6 +217,7 @@ def get_spiral_w2cs(
     positions = torch.einsum(
         "ij,nj->ni", ref_c2w[:3], F.pad(positions, (0, 1), value=1.0)
     )
+
     return get_lookat_w2cs(positions, lookat, up)
 
 

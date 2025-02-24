@@ -83,6 +83,7 @@ class Validator:
         if self.val_img_loader is None:
             return
 
+        per_img_psnrs = []
         for batch in tqdm(self.val_img_loader, desc="render val images"):
             batch = to_device(batch, self.device)
             frame_name = batch["frame_names"][0]
@@ -108,6 +109,7 @@ class Validator:
             W, H = img_wh = img[0].shape[-2::-1]
             rendered = self.model.render(t, w2c, K, img_wh, return_depth=True)
 
+            
             # Compute metrics.
             valid_mask *= covisible_mask
             fg_valid_mask = fg_mask * valid_mask
@@ -249,6 +251,7 @@ class Validator:
         ref_pred_depths = []
         masks = []
         depth_min, depth_max = 1e6, 0
+        normals = []
         for batch_idx, batch in enumerate(
             tqdm(self.train_loader, desc="Rendering video", leave=False)
         ):
@@ -282,6 +285,8 @@ class Validator:
             depth_max = max(depth_max, ref_pred_depth.quantile(0.99).item())
             if rendered["mask"] is not None:
                 masks.append(rendered["mask"][0].cpu().squeeze(-1))
+            if rendered["rend_normal"] is not None:
+                normals.append(rendered["rend_normal"].cpu())
 
         # rgb video
         video = torch.stack(video, dim=0)
@@ -305,6 +310,42 @@ class Validator:
             make_video_divisble((depth_video.numpy() * 255).astype(np.uint8)),
             fps=fps,
         )
+
+        # surf normal video
+        from flow3d.normal_utils import depth_to_normal
+        surf_normals = []
+        for depth in ref_pred_depths:
+            c2w = torch.linalg.inv(w2c)
+            K_cpu = K
+            surf_normal = depth_to_normal(depth[None].to(c2w.device), c2w[None], K_cpu[None], depth_min, depth_max)
+            # import pdb
+            # pdb.set_trace()
+            surf_normal = (surf_normal * 0.5 + 0.5).cpu()
+            surf_normal = (surf_normal - torch.min(surf_normal)) / (torch.max(surf_normal) - torch.min(surf_normal))
+            surf_normals.append(surf_normal.squeeze(0))
+
+        normal_video = torch.stack(surf_normals, dim=0)
+        iio.mimwrite(
+            osp.join(video_dir, "normals.mp4"),
+            make_video_divisble((normal_video.numpy() * 255).astype(np.uint8)),
+            fps=fps,
+        )
+
+        if len(normals) != 0:
+            rend_normals = []
+            for rend_n in normals:
+                rend_n = (rend_n * 0.5 + 0.5)
+                rend_n = (rend_n - torch.min(rend_n)) / (torch.max(rend_n) - torch.min(rend_n))
+                rend_normals.append(rend_n.squeeze(0))
+            rend_normal_video = torch.stack(rend_normals, dim=0)
+            iio.mimwrite(
+                osp.join(video_dir, "rend_normals.mp4"),
+                make_video_divisble((rend_normal_video.numpy() * 255).astype(np.uint8)),
+                fps=fps,
+            )
+
+            
+
         if len(masks) > 0:
             # mask video
             mask_video = torch.stack(masks, dim=0)

@@ -23,16 +23,54 @@ def masked_mse_loss(pred, gt, mask=None, normalize=True, quantile: float = 1.0):
             return torch.mean((sum_loss * mask)[quantile_mask])
 
 
+# def masked_l1_loss(pred, gt, mask=None, normalize=True, quantile: float = 1.0):
+#     if mask is None:
+#         return trimmed_l1_loss(pred, gt, quantile)
+#     else:
+#         sum_loss = F.l1_loss(pred, gt, reduction="none").mean(dim=-1, keepdim=True)
+#         quantile_mask = (
+#             (sum_loss < torch.quantile(sum_loss, quantile)).squeeze(-1)
+#             if quantile < 1
+#             else torch.ones_like(sum_loss, dtype=torch.bool).squeeze(-1)
+#         )
+#         ndim = sum_loss.shape[-1]
+#         if normalize:
+#             return torch.sum((sum_loss * mask)[quantile_mask]) / (
+#                 ndim * torch.sum(mask[quantile_mask]) + 1e-8
+#             )
+#         else:
+#             return torch.mean((sum_loss * mask)[quantile_mask])
+
+
 def masked_l1_loss(pred, gt, mask=None, normalize=True, quantile: float = 1.0):
     if mask is None:
         return trimmed_l1_loss(pred, gt, quantile)
     else:
         sum_loss = F.l1_loss(pred, gt, reduction="none").mean(dim=-1, keepdim=True)
-        quantile_mask = (
-            (sum_loss < torch.quantile(sum_loss, quantile)).squeeze(-1)
-            if quantile < 1
-            else torch.ones_like(sum_loss, dtype=torch.bool).squeeze(-1)
-        )
+        # sum_loss.shape 
+        # block     [218255, 1]
+        # apple     [36673, 475, 1]     17,419,675
+        # creeper   [37587, 360, 1]     13,531,320
+        # backpack  [37828, 180, 1]     6,809,040
+        # quantile_mask = (
+        #     (sum_loss < torch.quantile(sum_loss, quantile)).squeeze(-1)
+        #     if quantile < 1
+        #     else torch.ones_like(sum_loss, dtype=torch.bool).squeeze(-1)
+        # )
+        # use torch.sort instead of torch.quantile when input too large
+        if quantile < 1:
+            num = sum_loss.numel()
+            if num < 16_000_000:
+                threshold = torch.quantile(sum_loss, quantile)
+            else:
+                sorted, _ = torch.sort(sum_loss.reshape(-1))
+                idxf = quantile * num
+                idxi = int(idxf)
+                threshold = sorted[idxi] + (sorted[idxi + 1] - sorted[idxi]) * (idxf - idxi)
+            quantile_mask = (sum_loss < threshold).squeeze(-1)
+        else: 
+            quantile_mask = torch.ones_like(sum_loss, dtype=torch.bool).squeeze(-1)
+
         ndim = sum_loss.shape[-1]
         if normalize:
             return torch.sum((sum_loss * mask)[quantile_mask]) / (
@@ -40,7 +78,6 @@ def masked_l1_loss(pred, gt, mask=None, normalize=True, quantile: float = 1.0):
             )
         else:
             return torch.mean((sum_loss * mask)[quantile_mask])
-
 
 def masked_huber_loss(pred, gt, delta, mask=None, normalize=True):
     if mask is None:
